@@ -11,7 +11,7 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     env:
-      BRANCH_NAME: sync-upstream-${{ github.run_id }}
+      BRANCH_NAME: sync-upstream-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
