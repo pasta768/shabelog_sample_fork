@@ -1,0 +1,58 @@
+name: Sync upstream changes
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    env:
+      BRANCH_NAME: sync-upstream-${{ github.run_id }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Add upstream and fetch
+        run: |
+          git remote add upstream https://github.com/fai-0816/shabelog_sample.git
+          git fetch upstream
+
+      - name: Create sync branch and merge upstream/main
+        id: merge
+        run: |
+          git checkout main
+          git checkout -b "$BRANCH_NAME"
+          git merge upstream/main --no-edit
+          if git diff --quiet origin/main...HEAD; then
+            echo "No changes to sync."
+            echo "skip_pr=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip_pr=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Push branch
+        if: steps.merge.outputs.skip_pr != 'true'
+        run: |
+          git push origin "$BRANCH_NAME"
+
+      - name: Create pull request
+        if: steps.merge.outputs.skip_pr != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr create \
+            --base main \
+            --head "$BRANCH_NAME" \
+            --title "Sync upstream changes" \
+            --body "Automated sync from upstream/main."
