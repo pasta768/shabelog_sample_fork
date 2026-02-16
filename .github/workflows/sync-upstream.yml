@@ -56,12 +56,21 @@ jobs:
         run: |
           git push origin "$BRANCH_NAME"
 
+      - name: Show resolved repository
+        if: steps.merge.outputs.skip_pr != 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          echo "GITHUB_REPOSITORY=$GITHUB_REPOSITORY"
+          gh repo view --json nameWithOwner -q .nameWithOwner
+
       - name: Create pull request
         if: steps.merge.outputs.skip_pr != 'true'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           gh pr create \
+            --repo "$GITHUB_REPOSITORY" \
             --base main \
             --head "$BRANCH_NAME" \
             --title "Sync upstream changes" \
