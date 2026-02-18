@@ -1,4 +1,4 @@
-﻿name: Search files by string
+name: Search files by string
 
 on:
   workflow_dispatch:
@@ -14,105 +14,122 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       - name: Search files containing target text
         id: search
         run: |
-          set -euo pipefail
+          python - <<'PY'
+          import os
+          import sys
 
           # 検索対象ディレクトリ
-          TARGET_DIRECTORIES=(
-            "files"
-          )
+          target_directories = [
+              "files",
+          ]
           # 検索文字列
-          SEARCH_TEXTS=(
-            "world"
-            "linux"
-            "ubuntu"
-            "moon"
-          )
+          search_texts = [
+              "world",
+              "linux",
+              "ubuntu",
+              "moon",
+          ]
 
-          # 設定の妥当性チェック
-          if [ ${#TARGET_DIRECTORIES[@]} -eq 0 ]; then
-            echo "::error::No target directories configured"
-            exit 1
-          fi
+          if not target_directories:
+              print("::error::No target directories configured")
+              sys.exit(1)
 
-          if [ ${#SEARCH_TEXTS[@]} -eq 0 ]; then
-            echo "::error::No search texts configured"
-            exit 1
-          fi
+          if not search_texts:
+              print("::error::No search texts configured")
+              sys.exit(1)
+        
+          # 検索対象ディレクトリの存在確認
+          existing_directories = []
+          for d in target_directories:
+              if os.path.isdir(d):
+                  existing_directories.append(d)
+              else:
+                  print(f"::warning::Directory not found and skipped: {d}")
 
-          # 実在するディレクトリのみを検索対象にする
-          EXISTING_DIRECTORIES=()
-          for d in "${TARGET_DIRECTORIES[@]}"; do
-            if [ -d "$d" ]; then
-              EXISTING_DIRECTORIES+=("$d")
-            else
-              echo "::warning::Directory not found and skipped: $d"
-            fi
-          done
+          if not existing_directories:
+              print("::error::No existing target directories to search")
+              sys.exit(1)
 
-          if [ ${#EXISTING_DIRECTORIES[@]} -eq 0 ]; then
-            echo "::error::No existing target directories to search"
-            exit 1
-          fi
+          file_paths = []
+          for base_dir in existing_directories:
+              for root, _, files in os.walk(base_dir):
+                  for name in files:
+                      file_paths.append(os.path.join(root, name))
 
-          # 一致したファイルを集計するためのマップ
-          declare -A ALL_MATCHED_MAP=()
-          # Step Summary に追記する本文
-          SUMMARY_BODY=""
+          search_texts_lower = {s: s.lower() for s in search_texts}
+          matched_by_text = {s: [] for s in search_texts}
+          all_matched = set()
+          summary_body = []
 
-          # 検索文字列ごとにファイルを検索
-          for s in "${SEARCH_TEXTS[@]}"; do
-            # grep で該当文字列を含むファイル名を取得（大文字小文字を無視）
-            RAW_MATCHED_FILES=$(grep -RIlF --binary-files=without-match -i -e "$s" -- "${EXISTING_DIRECTORIES[@]}" || true)
-            MATCHED_FILES=$(printf "%s\n" "$RAW_MATCHED_FILES" | sed "/^[[:space:]]*$/d" | sort)
+          # ファイルを読み込み、検索文字列が含まれている場合はパスを記録
+          for path in file_paths:
+              try:
+                  with open(path, "rb") as f:
+                      # バイナリファイルは検索対象外
+                      if b"\x00" in f.read(8192):
+                          continue
+                      f.seek(0)
 
-            # この検索語の一致件数
-            CURRENT_COUNT=$(printf "%s\n" "$MATCHED_FILES" | wc -l | tr -d " ")
+                      remaining_texts = set(search_texts)
+                      for raw_line in f:
+                          line = raw_line.decode("utf-8", errors="ignore").lower()
+                          matched_texts = [s for s in remaining_texts if search_texts_lower[s] in line]
+                          for s in matched_texts:
+                              matched_by_text[s].append(path)
+                              all_matched.add(path)
+                              remaining_texts.remove(s)
 
-            SUMMARY_BODY="${SUMMARY_BODY}Search text: \`${s}\`\n"
-            SUMMARY_BODY="${SUMMARY_BODY}Matched files: \`${CURRENT_COUNT}\`\n\n"
+                          # 検索文字列が全て見つかったら、残りの行を読む必要はない
+                          if not remaining_texts:
+                              break
+              except OSError:
+                  continue
 
-            if [ "$CURRENT_COUNT" -gt 0 ]; then
-              SUMMARY_BODY="${SUMMARY_BODY}Matched file paths:\n\`\`\`\n${MATCHED_FILES}\n\`\`\`\n\n"
-              # 一致ファイルを一意に追加
-              while IFS= read -r line; do
-                [ -n "$line" ] && ALL_MATCHED_MAP["$line"]=1
-              done <<< "$MATCHED_FILES"
-            else
-              SUMMARY_BODY="${SUMMARY_BODY}No files contained this text.\n\n"
-            fi
-          done
+          for s in search_texts:
+              matched = sorted(set(matched_by_text[s]))
+              current_count = len(matched)
 
-          # 一致ファイル数を集計
-          TOTAL_MATCH_COUNT=0
-          for _ in "${!ALL_MATCHED_MAP[@]}"; do
-            TOTAL_MATCH_COUNT=$((TOTAL_MATCH_COUNT + 1))
-          done
+              summary_body.append(f"Search text: `{s}`\n")
+              summary_body.append(f"Matched files: `{current_count}`\n\n")
 
-          # 後続ステップ向けの出力
-          echo "match_count=$TOTAL_MATCH_COUNT" >> "$GITHUB_OUTPUT"
+              if current_count > 0:
+                  summary_body.append("Matched file paths:\n```\n")
+                  summary_body.append("\n".join(matched) + "\n")
+                  summary_body.append("```\n\n")
+                  all_matched.update(matched)
+              else:
+                  summary_body.append("No files contained this text.\n\n")
 
-          # GitHub Step Summary を出力
-          {
-            echo "### File Search Result"
-            echo "- Target directories configured: \`${#TARGET_DIRECTORIES[@]}\`"
-            echo "- Target directories searched: \`${#EXISTING_DIRECTORIES[@]}\`"
-            echo "- Search texts configured: \`${#SEARCH_TEXTS[@]}\`"
-            echo "- Case sensitive: \`false\`"
-            echo "- Matched files (unique): \`$TOTAL_MATCH_COUNT\`"
-            echo ""
-            echo "Target directories:"
-            echo "\`\`\`"
-            printf "%s\n" "${EXISTING_DIRECTORIES[@]}"
-            echo "\`\`\`"
-            echo ""
-            echo "Search texts:"
-            echo "\`\`\`"
-            printf "%s\n" "${SEARCH_TEXTS[@]}"
-            echo "\`\`\`"
-            echo ""
-            printf "%b" "$SUMMARY_BODY"
-          } >> "$GITHUB_STEP_SUMMARY"
+          total_match_count = len(all_matched)
+
+          github_output = os.environ.get("GITHUB_OUTPUT")
+          if github_output:
+              with open(github_output, "a", encoding="utf-8") as f:
+                  f.write(f"match_count={total_match_count}\n")
+
+          github_step_summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          if github_step_summary:
+              with open(github_step_summary, "a", encoding="utf-8") as f:
+                  f.write("### File Search Result\n")
+                  f.write(f"- Target directories configured: `{len(target_directories)}`\n")
+                  f.write(f"- Target directories searched: `{len(existing_directories)}`\n")
+                  f.write(f"- Search texts configured: `{len(search_texts)}`\n")
+                  f.write("- Case sensitive: `false`\n")
+                  f.write(f"- Matched files (unique): `{total_match_count}`\n\n")
+                  f.write("Target directories:\n```\n")
+                  f.write("\n".join(existing_directories) + "\n")
+                  f.write("```\n\n")
+                  f.write("Search texts:\n```\n")
+                  f.write("\n".join(search_texts) + "\n")
+                  f.write("```\n\n")
+                  f.write("".join(summary_body))
+          PY
 
