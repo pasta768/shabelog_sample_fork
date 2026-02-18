@@ -38,25 +38,23 @@ jobs:
       - name: Replace main content with upstream/develop
         id: replace
         run: |
-          # Backup current workflow from the current worktree.
+          # 現在のワークツリーからワークフローをバックアップする。
           cp .github/workflows/sync-upstream.yml /tmp/sync-upstream.yml
           cp .github/workflows/search-files-by-string.yml /tmp/search-files-by-string.yml
 
-          # Base branch on upstream/main.
+          # ブランチを upstream/develop を基準に作成する。
           git checkout -B sync-upstream upstream/develop
 
-          # Restore this workflow from backup.
+          # このワークフローをバックアップから復元する。
           mkdir -p .github/workflows
           cp /tmp/sync-upstream.yml .github/workflows/sync-upstream.yml
           cp /tmp/search-files-by-string.yml .github/workflows/search-files-by-string.yml
 
-          # Create a commit when restoring the workflow introduces changes.
+          # ワークフロー復元後の状態をコミットする。
           git add -A
-          if ! git diff --cached --quiet; then
-            git commit -m "Preserve sync-upstream workflow"
-          fi
+          git commit -m "Preserve sync-upstream workflow"
 
-          # Determine whether origin/internal needs to be updated.
+          # origin/internal の更新が必要かどうかを判定する。
           if git diff --quiet origin/internal HEAD; then
             echo "No changes to sync."
             echo "skip_push=true" >> "$GITHUB_OUTPUT"
