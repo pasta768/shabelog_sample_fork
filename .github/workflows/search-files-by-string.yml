@@ -1,0 +1,118 @@
+﻿name: Search files by string
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  search:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ fromJSON(vars.SEARCH_FILES_BY_STRING_TIMEOUT_MINUTES || '10') }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Search files containing target text
+        id: search
+        run: |
+          set -euo pipefail
+
+          # 検索対象ディレクトリ
+          TARGET_DIRECTORIES=(
+            "files"
+          )
+          # 検索文字列
+          SEARCH_TEXTS=(
+            "world"
+            "linux"
+            "ubuntu"
+            "moon"
+          )
+
+          # 設定の妥当性チェック
+          if [ ${#TARGET_DIRECTORIES[@]} -eq 0 ]; then
+            echo "::error::No target directories configured"
+            exit 1
+          fi
+
+          if [ ${#SEARCH_TEXTS[@]} -eq 0 ]; then
+            echo "::error::No search texts configured"
+            exit 1
+          fi
+
+          # 実在するディレクトリのみを検索対象にする
+          EXISTING_DIRECTORIES=()
+          for d in "${TARGET_DIRECTORIES[@]}"; do
+            if [ -d "$d" ]; then
+              EXISTING_DIRECTORIES+=("$d")
+            else
+              echo "::warning::Directory not found and skipped: $d"
+            fi
+          done
+
+          if [ ${#EXISTING_DIRECTORIES[@]} -eq 0 ]; then
+            echo "::error::No existing target directories to search"
+            exit 1
+          fi
+
+          # 一致したファイルを集計するためのマップ
+          declare -A ALL_MATCHED_MAP=()
+          # Step Summary に追記する本文
+          SUMMARY_BODY=""
+
+          # 検索文字列ごとにファイルを検索
+          for s in "${SEARCH_TEXTS[@]}"; do
+            # grep で該当文字列を含むファイル名を取得（大文字小文字を無視）
+            RAW_MATCHED_FILES=$(grep -RIlF --binary-files=without-match -i -e "$s" -- "${EXISTING_DIRECTORIES[@]}" || true)
+            MATCHED_FILES=$(printf "%s\n" "$RAW_MATCHED_FILES" | sed "/^[[:space:]]*$/d" | sort)
+
+            # この検索語の一致件数
+            CURRENT_COUNT=$(printf "%s\n" "$MATCHED_FILES" | wc -l | tr -d " ")
+
+            SUMMARY_BODY="${SUMMARY_BODY}Search text: \`${s}\`\n"
+            SUMMARY_BODY="${SUMMARY_BODY}Matched files: \`${CURRENT_COUNT}\`\n\n"
+
+            if [ "$CURRENT_COUNT" -gt 0 ]; then
+              SUMMARY_BODY="${SUMMARY_BODY}Matched file paths:\n\`\`\`\n${MATCHED_FILES}\n\`\`\`\n\n"
+              # 一致ファイルを一意に追加
+              while IFS= read -r line; do
+                [ -n "$line" ] && ALL_MATCHED_MAP["$line"]=1
+              done <<< "$MATCHED_FILES"
+            else
+              SUMMARY_BODY="${SUMMARY_BODY}No files contained this text.\n\n"
+            fi
+          done
+
+          # 一致ファイル数を集計
+          TOTAL_MATCH_COUNT=0
+          for _ in "${!ALL_MATCHED_MAP[@]}"; do
+            TOTAL_MATCH_COUNT=$((TOTAL_MATCH_COUNT + 1))
+          done
+
+          # 後続ステップ向けの出力
+          echo "match_count=$TOTAL_MATCH_COUNT" >> "$GITHUB_OUTPUT"
+
+          # GitHub Step Summary を出力
+          {
+            echo "### File Search Result"
+            echo "- Target directories configured: \`${#TARGET_DIRECTORIES[@]}\`"
+            echo "- Target directories searched: \`${#EXISTING_DIRECTORIES[@]}\`"
+            echo "- Search texts configured: \`${#SEARCH_TEXTS[@]}\`"
+            echo "- Case sensitive: \`false\`"
+            echo "- Matched files (unique): \`$TOTAL_MATCH_COUNT\`"
+            echo ""
+            echo "Target directories:"
+            echo "\`\`\`"
+            printf "%s\n" "${EXISTING_DIRECTORIES[@]}"
+            echo "\`\`\`"
+            echo ""
+            echo "Search texts:"
+            echo "\`\`\`"
+            printf "%s\n" "${SEARCH_TEXTS[@]}"
+            echo "\`\`\`"
+            echo ""
+            printf "%b" "$SUMMARY_BODY"
+          } >> "$GITHUB_STEP_SUMMARY"
+
