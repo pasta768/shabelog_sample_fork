@@ -56,15 +56,15 @@ jobs:
             git commit -m "Preserve sync-upstream workflow"
           fi
 
-          # Determine whether origin/main needs to be updated.
-          if git diff --quiet origin/main HEAD; then
+          # Determine whether origin/internal needs to be updated.
+          if git diff --quiet origin/internal HEAD; then
             echo "No changes to sync."
             echo "skip_push=true" >> "$GITHUB_OUTPUT"
           else
             echo "skip_push=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Force push to origin/main
+      - name: Force push to origin/internal
         if: steps.replace.outputs.skip_push != 'true'
         run: |
           git push --force-with-lease origin HEAD:internal
