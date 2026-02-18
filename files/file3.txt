@@ -1,0 +1,1 @@
+Our world monitoring script runs on linux in staging environments.

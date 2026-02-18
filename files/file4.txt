@@ -1,0 +1,1 @@
+This linux checklist confirms stable search behavior across repeated runs.
