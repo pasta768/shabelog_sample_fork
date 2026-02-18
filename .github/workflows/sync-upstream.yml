@@ -35,27 +35,20 @@ jobs:
           git remote add upstream https://github.com/fai-0816/shabelog_sample.git
           git fetch upstream
 
-      - name: Replace main content with upstream/main
+      - name: Replace main content with upstream/develop
         id: replace
         run: |
           # Backup current workflow from the current worktree.
-          if [ -f .github/workflows/sync-upstream.yml ]; then
-            cp .github/workflows/sync-upstream.yml /tmp/sync-upstream.yml
-            cp .github/workflows/search-files-by-string.yml /tmp/search-files-by-string.yml
-            HAS_BACKUP=true
-          else
-            HAS_BACKUP=false
-          fi
+          cp .github/workflows/sync-upstream.yml /tmp/sync-upstream.yml
+          cp .github/workflows/search-files-by-string.yml /tmp/search-files-by-string.yml
 
           # Base branch on upstream/main.
-          git checkout -B sync-upstream upstream/main
+          git checkout -B sync-upstream upstream/develop
 
           # Restore this workflow from backup.
-          if [ "$HAS_BACKUP" = "true" ]; then
-            mkdir -p .github/workflows
-            cp /tmp/sync-upstream.yml .github/workflows/sync-upstream.yml
-            cp /tmp/search-files-by-string.yml .github/workflows/search-files-by-string.yml
-          fi
+          mkdir -p .github/workflows
+          cp /tmp/sync-upstream.yml .github/workflows/sync-upstream.yml
+          cp /tmp/search-files-by-string.yml .github/workflows/search-files-by-string.yml
 
           # Create a commit when restoring the workflow introduces changes.
           git add -A
@@ -74,4 +67,4 @@ jobs:
       - name: Force push to origin/main
         if: steps.replace.outputs.skip_push != 'true'
         run: |
-          git push --force-with-lease origin HEAD:main
+          git push --force-with-lease origin HEAD:internal
