@@ -65,6 +65,15 @@ jobs:
               return normalized
 
 
+          def expand_exclude_pattern(pattern):
+              expanded = [pattern]
+              if pattern.startswith("**/"):
+                  root_pattern = pattern[3:]
+                  if root_pattern:
+                      expanded.append(root_pattern)
+              return expanded
+
+
           def parse_search_rules():
               var_name = "SEARCH_RULES_JSON"
               raw_value = os.environ.get(var_name, "")
@@ -97,12 +106,17 @@ jobs:
                   fail(f"{var_name}.exclude_patterns は文字列の JSON 配列である必要があります。")
 
               exclude_patterns = []
+              seen_exclude_patterns = set()
               for idx, value in enumerate(exclude_patterns_raw):
                   candidate = require_non_empty_string(value, f"{var_name}.exclude_patterns[{idx}]")
                   normalized = validate_relative_path(
                       candidate, f"{var_name}.exclude_patterns[{idx}]"
                   )
-                  exclude_patterns.append(normalized)
+                  for expanded_pattern in expand_exclude_pattern(normalized):
+                      if expanded_pattern in seen_exclude_patterns:
+                          continue
+                      seen_exclude_patterns.add(expanded_pattern)
+                      exclude_patterns.append(expanded_pattern)
 
               exclude_lines_by_file_raw = parsed.get("exclude_lines_by_file", {})
               if not isinstance(exclude_lines_by_file_raw, dict):
