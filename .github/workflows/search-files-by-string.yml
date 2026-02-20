@@ -1,0 +1,224 @@
+name: Search files by string
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  search:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ fromJSON(vars.SEARCH_FILES_BY_STRING_TIMEOUT_MINUTES || '10') }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Search files containing target text
+        id: search
+        env:
+          SEARCH_RULES_JSON: ${{ vars.SEARCH_FILES_BY_STRING_RULES }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import sys
+
+
+          def fail(message):
+              print(f"::error::{message}")
+              sys.exit(1)
+
+
+          def normalize_path(value):
+              normalized = value.strip().replace("\\", "/")
+              if normalized.startswith("./"):
+                  normalized = normalized[2:]
+              while "//" in normalized:
+                  normalized = normalized.replace("//", "/")
+              return normalized.lower()
+
+
+          def parse_search_rules():
+              var_name = "SEARCH_RULES_JSON"
+              raw_value = os.environ.get("SEARCH_RULES_JSON", "")
+
+              if raw_value is None or raw_value.strip() == "":
+                  fail(f"{var_name} が空です。JSONオブジェクト文字列を設定してください。")
+
+              try:
+                  parsed = json.loads(raw_value)
+              except json.JSONDecodeError as ex:
+                  fail(f"{var_name} は有効なJSONである必要があります: {ex}")
+
+              if not isinstance(parsed, dict):
+                  fail(f"{var_name} はJSONオブジェクトである必要があります。")
+
+              search_texts_raw = parsed.get("search_texts")
+              if not isinstance(search_texts_raw, list):
+                  fail(f"{var_name}.search_texts は文字列のJSON配列である必要があります。")
+
+              search_texts_cleaned = []
+              for idx, item in enumerate(search_texts_raw):
+                  if not isinstance(item, str):
+                      fail(f"{var_name}.search_texts[{idx}] は文字列である必要があります。")
+                  candidate = item.strip()
+                  if candidate != "":
+                      search_texts_cleaned.append(candidate)
+
+              if not search_texts_cleaned:
+                  fail(f"{var_name}.search_texts には空でない文字列を1つ以上含めてください。")
+
+              exclude_lines_by_file_raw = parsed.get("exclude_lines_by_file", {})
+              if not isinstance(exclude_lines_by_file_raw, dict):
+                  fail(f"{var_name}.exclude_lines_by_file はオブジェクトである必要があります。")
+
+              exclude_lines_by_file = {}
+              for file_path, lines in exclude_lines_by_file_raw.items():
+                  if not isinstance(file_path, str):
+                      fail(f"{var_name}.exclude_lines_by_file のキーは文字列である必要があります。")
+                  if not isinstance(lines, list):
+                      fail(
+                          f"{var_name}.exclude_lines_by_file['{file_path}'] は文字列のJSON配列である必要があります。"
+                      )
+
+                  normalized_file_path = normalize_path(file_path)
+                  if normalized_file_path == "":
+                      continue
+
+                  normalized_exclude_lines = set()
+                  for idx, line in enumerate(lines):
+                      if not isinstance(line, str):
+                          fail(
+                              f"{var_name}.exclude_lines_by_file['{file_path}'][{idx}] は文字列である必要があります。"
+                          )
+                      candidate = line.strip()
+                      if candidate != "":
+                          normalized_exclude_lines.add(candidate.lower())
+
+                  exclude_lines_by_file[normalized_file_path] = normalized_exclude_lines
+
+              return search_texts_cleaned, exclude_lines_by_file
+
+
+          def main():
+              search_texts_raw, exclude_lines_by_file = parse_search_rules()
+
+              # ユーザー指定の順序を維持したまま重複を除去する。
+              search_texts = []
+              seen_search_texts = set()
+              for value in search_texts_raw:
+                  lowered = value.lower()
+                  if lowered not in seen_search_texts:
+                      seen_search_texts.add(lowered)
+                      search_texts.append(value)
+
+              search_texts_lower = {value: value.lower() for value in search_texts}
+              excluded_directories = {".git", "node_modules"}
+              search_root = "."
+
+              results = {value: {} for value in search_texts}
+              searched_file_count = 0
+
+              for root, dirs, files in os.walk(search_root):
+                  dirs[:] = [name for name in dirs if name not in excluded_directories]
+                  for name in files:
+                      path = os.path.join(root, name)
+                      relative_path = os.path.relpath(path, search_root)
+                      relative_path_posix = relative_path.replace(os.sep, "/")
+                      normalized_relative_path = normalize_path(relative_path_posix)
+                      file_exclude_lines = exclude_lines_by_file.get(normalized_relative_path, set())
+
+                      searched_file_count += 1
+                      try:
+                          with open(path, "rb") as f:
+                              if b"\x00" in f.read(8192):
+                                  continue
+                              f.seek(0)
+
+                              for line_no, raw_line in enumerate(f, start=1):
+                                  line = raw_line.decode("utf-8", errors="ignore").rstrip("\r\n")
+                                  line_lower = line.lower()
+                                  if line_lower in file_exclude_lines:
+                                      continue
+
+                                  for text in search_texts:
+                                      if search_texts_lower[text] in line_lower:
+                                          matched_lines = results[text].setdefault(relative_path_posix, [])
+                                          matched_lines.append((line_no, line))
+                      except OSError:
+                          continue
+
+              matched_files = set()
+              match_line_count = 0
+              for text in search_texts:
+                  for path, lines in results[text].items():
+                      if lines:
+                          matched_files.add(path)
+                          match_line_count += len(lines)
+              match_file_count = len(matched_files)
+
+              def escape_markdown_table_cell(value):
+                  return value.replace("|", "\\|").replace("\n", " ").replace("\r", " ")
+
+              def escape_html_text(value):
+                  return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+              summary_body = []
+              per_text_counts = {}
+              for text in search_texts:
+                  matched_file_map = results[text]
+                  file_count = len(matched_file_map)
+                  line_count = sum(len(lines) for lines in matched_file_map.values())
+                  per_text_counts[text] = (file_count, line_count)
+
+                  summary_body.append("<details>\n")
+                  summary_body.append(
+                      f"<summary>{escape_html_text(text)} ({file_count} files / {line_count} lines)</summary>\n\n"
+                  )
+                  if not matched_file_map:
+                      summary_body.append("- 該当なし\n\n")
+                      summary_body.append("</details>\n\n")
+                      continue
+
+                  for path in sorted(matched_file_map.keys()):
+                      matched_lines = matched_file_map[path]
+                      summary_body.append(f"- /{path} ({len(matched_lines)})\n")
+                      for line_no, line in matched_lines:
+                          summary_body.append(f"  - {line_no}: {line}\n")
+                      summary_body.append("\n")
+                  summary_body.append("</details>\n\n")
+
+              github_output = os.environ.get("GITHUB_OUTPUT")
+              if github_output:
+                  with open(github_output, "a", encoding="utf-8") as f:
+                      f.write(f"match_file_count={match_file_count}\n")
+                      f.write(f"match_line_count={match_line_count}\n")
+
+              github_step_summary = os.environ.get("GITHUB_STEP_SUMMARY")
+              if github_step_summary:
+                  with open(github_step_summary, "a", encoding="utf-8") as f:
+                      f.write("### ファイル検索結果\n")
+                      f.write(f"- 一致ファイル数: `{match_file_count}`\n")
+                      f.write(f"- 一致行数: `{match_line_count}`\n\n")
+                      f.write("| 検索文字列 | 一致ファイル数 | 一致行数 |\n")
+                      f.write("|---|---:|---:|\n")
+                      for text in search_texts:
+                          file_count, line_count = per_text_counts[text]
+                          f.write(
+                              f"| {escape_markdown_table_cell(text)} | {file_count} | {line_count} |\n"
+                          )
+
+                      f.write("\n<details>\n")
+                      f.write("<summary>詳細を表示</summary>\n\n")
+                      f.write("".join(summary_body))
+                      f.write("</details>\n")
+
+          if __name__ == "__main__":
+              main()
+          PY
