@@ -1,4 +1,4 @@
-name: Search files by string
+﻿name: Search files by string
 
 on:
   workflow_dispatch:
@@ -25,6 +25,7 @@ jobs:
           SEARCH_RULES_JSON: ${{ vars.SEARCH_FILES_BY_STRING_RULES }}
         run: |
           python - <<'PY'
+          import fnmatch
           import json
           import os
           import sys
@@ -41,100 +42,163 @@ jobs:
                   normalized = normalized[2:]
               while "//" in normalized:
                   normalized = normalized.replace("//", "/")
-              return normalized.lower()
+              return normalized
+
+
+          def require_non_empty_string(value, path):
+              if not isinstance(value, str):
+                  fail(f"{path} は文字列である必要があります。")
+              candidate = value.strip()
+              if candidate == "":
+                  fail(f"{path} は空文字または空白のみにはできません。")
+              return candidate
+
+
+          def validate_relative_path(path, path_name):
+              normalized = normalize_path(path)
+              if normalized == "":
+                  fail(f"{path_name} は空にできません。")
+              if os.path.isabs(normalized) or normalized.startswith("/"):
+                  fail(f"{path_name} は相対パスである必要があります。")
+              if normalized == ".." or normalized.startswith("../"):
+                  fail(f"{path_name} に親ディレクトリへの遡り (../) を含めることはできません。")
+              return normalized
 
 
           def parse_search_rules():
               var_name = "SEARCH_RULES_JSON"
-              raw_value = os.environ.get("SEARCH_RULES_JSON", "")
+              raw_value = os.environ.get(var_name, "")
 
               if raw_value is None or raw_value.strip() == "":
-                  fail(f"{var_name} が空です。JSONオブジェクト文字列を設定してください。")
+                  fail(f"{var_name} は必須で、JSON オブジェクト文字列である必要があります。")
 
               try:
                   parsed = json.loads(raw_value)
               except json.JSONDecodeError as ex:
-                  fail(f"{var_name} は有効なJSONである必要があります: {ex}")
+                  fail(f"{var_name} は有効な JSON ではありません: {ex}")
 
               if not isinstance(parsed, dict):
-                  fail(f"{var_name} はJSONオブジェクトである必要があります。")
+                  fail(f"{var_name} は JSON オブジェクトである必要があります。")
 
               search_texts_raw = parsed.get("search_texts")
               if not isinstance(search_texts_raw, list):
-                  fail(f"{var_name}.search_texts は文字列のJSON配列である必要があります。")
+                  fail(f"{var_name}.search_texts は文字列の JSON 配列である必要があります。")
 
               search_texts_cleaned = []
               for idx, item in enumerate(search_texts_raw):
-                  if not isinstance(item, str):
-                      fail(f"{var_name}.search_texts[{idx}] は文字列である必要があります。")
-                  candidate = item.strip()
-                  if candidate != "":
-                      search_texts_cleaned.append(candidate)
+                  candidate = require_non_empty_string(item, f"{var_name}.search_texts[{idx}]")
+                  search_texts_cleaned.append(candidate)
 
               if not search_texts_cleaned:
-                  fail(f"{var_name}.search_texts には空でない文字列を1つ以上含めてください。")
+                  fail(f"{var_name}.search_texts には少なくとも 1 つの文字列が必要です。")
+
+              exclude_patterns_raw = parsed.get("exclude_patterns", [])
+              if not isinstance(exclude_patterns_raw, list):
+                  fail(f"{var_name}.exclude_patterns は文字列の JSON 配列である必要があります。")
+
+              exclude_patterns = []
+              for idx, value in enumerate(exclude_patterns_raw):
+                  candidate = require_non_empty_string(value, f"{var_name}.exclude_patterns[{idx}]")
+                  normalized = validate_relative_path(
+                      candidate, f"{var_name}.exclude_patterns[{idx}]"
+                  )
+                  exclude_patterns.append(normalized)
 
               exclude_lines_by_file_raw = parsed.get("exclude_lines_by_file", {})
               if not isinstance(exclude_lines_by_file_raw, dict):
-                  fail(f"{var_name}.exclude_lines_by_file はオブジェクトである必要があります。")
+                  fail(f"{var_name}.exclude_lines_by_file は JSON オブジェクトである必要があります。")
 
               exclude_lines_by_file = {}
               for file_path, lines in exclude_lines_by_file_raw.items():
                   if not isinstance(file_path, str):
-                      fail(f"{var_name}.exclude_lines_by_file のキーは文字列である必要があります。")
+                      fail(f"{var_name}.exclude_lines_by_file key は文字列である必要があります。")
                   if not isinstance(lines, list):
                       fail(
-                          f"{var_name}.exclude_lines_by_file['{file_path}'] は文字列のJSON配列である必要があります。"
+                          f"{var_name}.exclude_lines_by_file['{file_path}'] "
+                          "は文字列の JSON 配列である必要があります。"
                       )
 
-                  normalized_file_path = normalize_path(file_path)
-                  if normalized_file_path == "":
-                      continue
+                  key = require_non_empty_string(
+                      file_path, f"{var_name}.exclude_lines_by_file key '{file_path}'"
+                  )
+                  normalized_file_path = validate_relative_path(
+                      key, f"{var_name}.exclude_lines_by_file key '{file_path}'"
+                  )
 
                   normalized_exclude_lines = set()
                   for idx, line in enumerate(lines):
-                      if not isinstance(line, str):
-                          fail(
-                              f"{var_name}.exclude_lines_by_file['{file_path}'][{idx}] は文字列である必要があります。"
-                          )
-                      candidate = line.strip()
-                      if candidate != "":
-                          normalized_exclude_lines.add(candidate.lower())
+                      candidate = require_non_empty_string(
+                          line, f"{var_name}.exclude_lines_by_file['{file_path}'][{idx}]"
+                      )
+                      normalized_exclude_lines.add(candidate)
 
                   exclude_lines_by_file[normalized_file_path] = normalized_exclude_lines
 
-              return search_texts_cleaned, exclude_lines_by_file
+              return search_texts_cleaned, exclude_patterns, exclude_lines_by_file
+
+
+          def matches_any_pattern(relative_path, patterns):
+              if not patterns:
+                  return False
+              normalized = normalize_path(relative_path)
+              return any(fnmatch.fnmatchcase(normalized, pattern) for pattern in patterns)
+
+
+          def matches_directory_pattern(relative_dir_path, patterns):
+              if not patterns:
+                  return False
+              normalized = normalize_path(relative_dir_path)
+              if matches_any_pattern(normalized, patterns):
+                  return True
+              # 末尾スラッシュ付きでも判定し、**/node_modules/** のようなパターンで
+              # ディレクトリ自体を早期に除外できるようにする。
+              return matches_any_pattern(normalized + "/", patterns)
 
 
           def main():
-              search_texts_raw, exclude_lines_by_file = parse_search_rules()
+              search_texts_raw, exclude_patterns, exclude_lines_by_file = parse_search_rules()
 
-              # ユーザー指定の順序を維持したまま重複を除去する。
               search_texts = []
               seen_search_texts = set()
               for value in search_texts_raw:
-                  lowered = value.lower()
-                  if lowered not in seen_search_texts:
-                      seen_search_texts.add(lowered)
+                  if value not in seen_search_texts:
+                      seen_search_texts.add(value)
                       search_texts.append(value)
 
-              search_texts_lower = {value: value.lower() for value in search_texts}
-              excluded_directories = {".git", "node_modules"}
               search_root = "."
 
               results = {value: {} for value in search_texts}
-              searched_file_count = 0
 
               for root, dirs, files in os.walk(search_root):
-                  dirs[:] = [name for name in dirs if name not in excluded_directories]
+                  if exclude_patterns:
+                      root_relative_path = os.path.relpath(root, search_root)
+                      if root_relative_path == ".":
+                          root_relative_path = ""
+                      else:
+                          root_relative_path = normalize_path(root_relative_path)
+
+                      filtered_dirs = []
+                      for name in dirs:
+                          if root_relative_path:
+                              relative_dir_path = f"{root_relative_path}/{name}"
+                          else:
+                              relative_dir_path = name
+                          if matches_directory_pattern(relative_dir_path, exclude_patterns):
+                              continue
+                          filtered_dirs.append(name)
+                      dirs[:] = filtered_dirs
+
                   for name in files:
                       path = os.path.join(root, name)
                       relative_path = os.path.relpath(path, search_root)
                       relative_path_posix = relative_path.replace(os.sep, "/")
                       normalized_relative_path = normalize_path(relative_path_posix)
+
+                      if matches_any_pattern(normalized_relative_path, exclude_patterns):
+                          continue
+
                       file_exclude_lines = exclude_lines_by_file.get(normalized_relative_path, set())
 
-                      searched_file_count += 1
                       try:
                           with open(path, "rb") as f:
                               if b"\x00" in f.read(8192):
@@ -143,12 +207,11 @@ jobs:
 
                               for line_no, raw_line in enumerate(f, start=1):
                                   line = raw_line.decode("utf-8", errors="ignore").rstrip("\r\n")
-                                  line_lower = line.lower()
-                                  if line_lower in file_exclude_lines:
+                                  if line in file_exclude_lines:
                                       continue
 
                                   for text in search_texts:
-                                      if search_texts_lower[text] in line_lower:
+                                      if text in line:
                                           matched_lines = results[text].setdefault(relative_path_posix, [])
                                           matched_lines.append((line_no, line))
                       except OSError:
@@ -182,7 +245,7 @@ jobs:
                       f"<summary>{escape_html_text(text)} ({file_count} files / {line_count} lines)</summary>\n\n"
                   )
                   if not matched_file_map:
-                      summary_body.append("- 該当なし\n\n")
+                      summary_body.append("- 一致なし\n")
                       summary_body.append("</details>\n\n")
                       continue
 
@@ -204,8 +267,8 @@ jobs:
               if github_step_summary:
                   with open(github_step_summary, "a", encoding="utf-8") as f:
                       f.write("### ファイル検索結果\n")
-                      f.write(f"- 一致ファイル数: `{match_file_count}`\n")
-                      f.write(f"- 一致行数: `{match_line_count}`\n\n")
+                      f.write(f"- 一致したファイル数: `{match_file_count}`\n")
+                      f.write(f"- 一致した行数: `{match_line_count}`\n\n")
                       f.write("| 検索文字列 | 一致ファイル数 | 一致行数 |\n")
                       f.write("|---|---:|---:|\n")
                       for text in search_texts:
@@ -219,6 +282,9 @@ jobs:
                       f.write("".join(summary_body))
                       f.write("</details>\n")
 
+
           if __name__ == "__main__":
               main()
           PY
+
+
