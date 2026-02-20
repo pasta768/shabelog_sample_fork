@@ -1,4 +1,4 @@
-﻿name: Search files by string
+name: Search files by string
 
 on:
   workflow_dispatch:
@@ -218,13 +218,16 @@ jobs:
                           continue
 
               matched_files = set()
-              match_line_count = 0
+              matched_line_locations = set()
               for text in search_texts:
                   for path, lines in results[text].items():
-                      if lines:
-                          matched_files.add(path)
-                          match_line_count += len(lines)
+                      if not lines:
+                          continue
+                      matched_files.add(path)
+                      for line_no, _ in lines:
+                          matched_line_locations.add((path, line_no))
               match_file_count = len(matched_files)
+              match_line_count = len(matched_line_locations)
 
               def escape_markdown_table_cell(value):
                   return value.replace("|", "\\|").replace("\n", " ").replace("\r", " ")
